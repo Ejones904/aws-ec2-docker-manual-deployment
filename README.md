@@ -1,12 +1,29 @@
 # AWS EC2 Docker Manual Deployment
 
-## Overview
+Manual deployment of a containerized **Spring Boot application to AWS EC2**, using Docker Hub as the image registry and AWS Security Groups for network access control.
 
-This project demonstrates the manual deployment of a containerized Spring Boot application to an AWS EC2 instance using Docker.
+The project was designed to establish and troubleshoot the complete deployment path manually before automating the same process through CI/CD.
 
-The objective was to work through the deployment process manually before automating it through CI/CD. This included provisioning the cloud infrastructure, configuring the Linux host, installing Docker, pulling a versioned application image from Docker Hub, configuring network access, deploying the container, troubleshooting application failures, and validating the application externally.
+---
 
-The final application was successfully deployed to AWS EC2 and returned:
+## Project Overview
+
+The objective was to deploy a versioned Docker image to an AWS-hosted Linux server and validate the application from end to end.
+
+The implementation included:
+
+* AWS EC2 provisioning
+* Amazon Linux administration
+* SSH key-based access
+* Docker installation and configuration
+* Docker Hub image retrieval
+* versioned container deployment
+* Docker port mapping
+* AWS Security Group configuration
+* Spring Boot application troubleshooting
+* HTTP endpoint validation
+
+The final application was successfully deployed and returned:
 
 ```text
 HTTP/1.1 200
@@ -15,329 +32,263 @@ OK
 
 ---
 
-## Business Context
-
-Modern CI/CD platforms can automate most application deployment steps, but those automated steps still depend on the underlying infrastructure, runtime, networking, artifacts, and application configuration being correct.
-
-This project was designed to work through those dependencies manually.
-
-Rather than treating deployment as a single automated action, I worked through the individual components involved:
-
-* Cloud compute provisioning
-* Linux server administration
-* Secure SSH access
-* Docker installation and configuration
-* Container registry interaction
-* Versioned image deployment
-* Port mapping
-* AWS Security Group configuration
-* Application troubleshooting
-* HTTP validation
-
-Working through the process manually also made it possible to troubleshoot failures at the correct layer instead of treating the deployment pipeline as a black box.
-
----
-
-# Architecture
+## Architecture
 
 ```text
-Developer Workstation
-        |
-        | Source Code
-        v
-    Maven Build
-        |
-        v
-   Docker Build
-        |
-        v
-    Docker Hub
-        |
-        | docker pull
-        v
-+-----------------------------+
-|        AWS EC2              |
-|                             |
-|  Amazon Linux               |
-|        |                    |
-|        v                    |
-|  Docker Engine              |
-|        |                    |
-|        v                    |
-|  Spring Boot Container      |
-|  Internal Port: 8080        |
-|        |                    |
-|        v                    |
-|  EC2 Host Port: 3000        |
-+-------------|---------------+
-              |
-              v
-       Security Group
-        TCP Port 3000
-              |
-              v
-           Internet
-              |
-              v
-         HTTP 200 OK
+Application Source
+       |
+       v
+   Maven Build
+       |
+       v
+  Docker Image
+       |
+       v
+   Docker Hub
+       |
+       | docker pull
+       v
++---------------------------+
+|        AWS EC2            |
+|                           |
+|     Amazon Linux          |
+|          |                |
+|          v                |
+|     Docker Engine         |
+|          |                |
+|          v                |
+|  Spring Boot Container    |
+|       Port 8080            |
+|          |                |
+|          v                |
+|   EC2 Host Port 3000      |
++------------|--------------+
+             |
+             v
+      Security Group
+        TCP 3000
+             |
+             v
+        HTTP Client
 ```
 
 ---
 
-# Technologies Used
+## Technology Stack
 
-| Technology          | Purpose                         |
-| ------------------- | ------------------------------- |
-| AWS EC2             | Cloud compute instance          |
-| Amazon Linux        | EC2 host operating system       |
-| Docker              | Container runtime               |
-| Docker Hub          | Container image registry        |
-| Java 17             | Application runtime             |
-| Spring Boot         | Application framework           |
-| Maven               | Application build and packaging |
-| Git/GitHub          | Source control                  |
-| SSH                 | Secure EC2 administration       |
-| curl                | HTTP endpoint validation        |
-| AWS Security Groups | Network access control          |
-
----
-
-# 1. Provisioning the EC2 Instance
-
-I provisioned an AWS EC2 instance that would act as the deployment host for the containerized application.
-
-The instance configuration included the operating system, instance type, SSH key pair, networking configuration, storage, and Security Group.
-
-![EC2 Instance Launch Configuration](screenshots/01-ec2-instance-launch-configuration.png)
-
-After provisioning, I verified that the instance entered the running state and obtained the network information required to connect to the server.
-
-![Running EC2 Instance](screenshots/02-ec2-instance-running.png)
+| Technology          | Purpose                  |
+| ------------------- | ------------------------ |
+| AWS EC2             | Cloud compute            |
+| Amazon Linux        | Deployment host          |
+| AWS Security Groups | Network access control   |
+| Docker              | Container runtime        |
+| Docker Hub          | Container image registry |
+| Spring Boot         | Application framework    |
+| Java 17             | Application runtime      |
+| Maven               | Build and packaging      |
+| SSH                 | Remote administration    |
+| curl                | HTTP validation          |
+| Git / GitHub        | Source control           |
 
 ---
 
-# 2. Securing SSH Access
+## Engineering Decisions
 
-The EC2 private key was stored locally rather than inside the project repository.
+### Manual Deployment Before CI/CD
 
-The key permissions were restricted before connecting:
+The deployment was intentionally completed manually before introducing Jenkins automation.
 
-```bash
-chmod 400 ~/.ssh/Docker-Server.pem
+This exposed each layer involved in delivering the application:
+
+```text
+Build
+  ↓
+Artifact
+  ↓
+Container Image
+  ↓
+Registry
+  ↓
+Cloud Host
+  ↓
+Container Runtime
+  ↓
+Network Access
+  ↓
+Application
+  ↓
+Validation
 ```
 
-The instance was then accessed using SSH:
-
-```bash
-ssh -i ~/.ssh/Docker-Server.pem ec2-user@<EC2-PUBLIC-IP>
-```
-
-The private key is intentionally excluded from this repository.
+Understanding these dependencies makes later CI/CD failures easier to isolate because the underlying deployment process is already known.
 
 ---
 
-# 3. Preparing the Linux Host
+### Versioned Docker Images
 
-Once connected to the EC2 instance, I verified that the operating system packages were current:
+The application was deployed using explicitly versioned Docker images rather than relying on `latest`.
 
-```bash
-sudo yum update
-```
-
-Docker was then installed:
-
-```bash
-sudo yum install docker
-```
-
-The Docker service was started:
-
-```bash
-sudo service docker start
-```
-
-I verified that the Docker daemon was running before continuing with the deployment.
-
----
-
-# 4. Configuring Non-Root Docker Access
-
-Rather than requiring `sudo` for every Docker command, I added the EC2 user to the Docker group:
-
-```bash
-sudo usermod -aG docker $USER
-```
-
-After reconnecting to the EC2 instance, Docker commands could be executed as the standard `ec2-user`.
-
-Docker functionality was initially validated by pulling and running a Redis container.
-
-This provided a simple way to verify that:
-
-* Docker was installed correctly
-* The Docker daemon was running
-* The EC2 instance could communicate with a container registry
-* The user had permission to manage containers
-
----
-
-# 5. Pulling the Application Image
-
-The application had already been packaged as a versioned Docker image and pushed to Docker Hub.
-
-From the EC2 instance, I pulled the application image:
+Example:
 
 ```bash
 docker pull ejones904/demo-app:1.2.5-42
 ```
 
-I then verified the image:
-
-```bash
-docker images
-```
-
-The EC2 instance successfully downloaded the application image from Docker Hub.
-
-![Docker Image Pulled from Docker Hub](screenshots/06-docker-image-pulled-from-dockerhub.png)
-
-Using version-specific Docker tags allowed the exact application artifact being deployed to be identified rather than relying on a generic `latest` tag.
+Using version-specific tags makes it possible to identify exactly which application artifact is running on the server.
 
 ---
 
-# 6. Deploying the Application Container
+### Separate Host and Container Ports
 
-The application was started with Docker:
+The application listens on port `8080` inside the container while EC2 exposes the service through port `3000`.
+
+```text
+EC2 :3000
+    ↓
+Docker Port Mapping
+    ↓
+Container :8080
+    ↓
+Spring Boot
+```
+
+The container was deployed using:
 
 ```bash
 docker run -d -p 3000:8080 ejones904/demo-app:1.2.5-42
 ```
 
-The port mapping:
+---
 
-```text
-3000:8080
-```
+### Layered Validation
 
-means:
+Application availability was not treated as a single pass/fail condition.
 
-```text
-EC2 Host Port 3000
-        |
-        v
-Container Port 8080
-        |
-        v
-Spring Boot / Tomcat
-```
+The deployment was validated through multiple layers:
 
-I verified the running container with:
+* EC2 instance state
+* Docker daemon state
+* container state
+* application logs
+* port mapping
+* local HTTP response
+* AWS Security Group
+* external HTTP response
+
+This approach became especially important during troubleshooting.
+
+---
+
+## Implementation
+
+The EC2 instance was provisioned and accessed using SSH key authentication.
+
+Docker was installed on the Amazon Linux host and the standard EC2 user was configured for Docker access.
+
+A versioned Spring Boot image was pulled from Docker Hub and deployed with:
 
 ```bash
-docker ps
+docker run -d \
+  --name demo-app \
+  -p 3000:8080 \
+  ejones904/demo-app:<VERSION>
 ```
 
-Docker confirmed the mapping:
+The AWS Security Group was then configured to permit the required inbound application traffic.
+
+Detailed commands and chronological build steps are preserved in [`IMPLEMENTATION.md`](IMPLEMENTATION.md).
+
+---
+
+## Deployment Workflow
 
 ```text
-0.0.0.0:3000->8080/tcp
+Maven Application
+       |
+       v
+Application JAR
+       |
+       v
+Docker Image
+       |
+       v
+Docker Hub
+       |
+       v
+AWS EC2
+       |
+       v
+Docker Container
+       |
+       v
+Spring Boot :8080
+       |
+       v
+EC2 :3000
+       |
+       v
+HTTP Validation
 ```
+
+### Container Deployment
+
+The versioned image was successfully retrieved from Docker Hub.
+
+![Docker Image Pulled](screenshots/06-docker-image-pulled-from-dockerhub.png)
+
+The application container was then launched and its port mapping verified.
 
 ![Application Container Running](screenshots/07-application-container-running.png)
 
 ---
 
-# 7. Configuring AWS Network Access
+## Network Configuration
 
-The EC2 Security Group was updated to permit inbound TCP traffic to port `3000`.
+AWS Security Groups were used to control inbound traffic to the EC2 instance.
 
-This allowed external requests to reach:
-
-```text
-EC2 :3000
-   |
-   v
-Docker :8080
-   |
-   v
-Spring Boot
-```
+Application access was configured for TCP port `3000`, which maps to Spring Boot's internal container port `8080`.
 
 ![Security Group Port 3000](screenshots/08-security-group-port-3000.png)
 
-For testing, access was restricted where practical rather than unnecessarily exposing services to unrestricted inbound traffic.
+SSH access and application access were treated as separate network requirements rather than broadly exposing the server.
 
 ---
 
-# 8. Validating the Spring Boot Application
+## Troubleshooting
 
-Container logs were inspected to verify that the Java application had started successfully:
+The most valuable part of this project was diagnosing failures across multiple layers of the deployment stack.
 
-```bash
-docker logs <container>
-```
+### HTTP 404 — Infrastructure Was Working
 
-The logs confirmed:
+The first external request returned a Spring Boot **Whitelabel 404** page.
 
-```text
-Tomcat initialized with port 8080
-Java app started
-Tomcat started on port 8080
-Started Application
-```
+At first glance, the application appeared unavailable.
 
-![Spring Boot Application Started](screenshots/09-spring-boot-application-started.png)
+However, the 404 response provided useful evidence.
 
-At this point:
-
-* EC2 was running
-* Docker was running
-* The container was running
-* Port mapping was correct
-* Tomcat was listening on port 8080
-* External traffic could reach the application
-
-However, the first browser request did not return the expected application response.
-
----
-
-# 9. Troubleshooting HTTP 404
-
-The first external request reached Spring Boot but returned:
-
-```text
-Whitelabel Error Page
-
-status=404
-Not Found
-```
-
-This was an important distinction.
-
-Because the Spring Boot Whitelabel page was being returned, the request had already successfully passed through:
+For Spring Boot to return the Whitelabel page, the request had already successfully traveled through:
 
 ```text
 Internet
-   |
-   v
+   ↓
 AWS Security Group
-   |
-   v
+   ↓
 EC2 Port 3000
-   |
-   v
+   ↓
 Docker Port Mapping
-   |
-   v
+   ↓
 Container Port 8080
-   |
-   v
+   ↓
 Spring Boot
 ```
 
-That meant the problem was no longer likely to be AWS networking or Docker.
+That allowed the infrastructure and networking layers to be ruled out.
 
-I inspected the application source and found:
+The investigation moved to the application layer.
+
+### Root Cause
+
+The Java method existed:
 
 ```java
 public String getStatus() {
@@ -345,9 +296,9 @@ public String getStatus() {
 }
 ```
 
-The method existed, but Spring had not been instructed to expose it as an HTTP endpoint.
+but it had not been exposed as an HTTP endpoint.
 
-I updated the application to use:
+The application was updated with Spring REST mappings:
 
 ```java
 @RestController
@@ -362,113 +313,98 @@ public String getStatus() {
 }
 ```
 
-This mapped an HTTP GET request to `/` to the application's status method.
-
 ---
 
-# 10. Rebuilding the Application Artifact
+### Stale Application Artifact
 
-After changing the application code, I initially rebuilt the Docker image.
+After changing the Java source, rebuilding only the Docker image did not resolve the issue.
 
-The redeployed application continued returning a 404.
+The investigation showed that Docker was still packaging the previously generated Maven artifact.
 
-This led to another important discovery: changing the Java source did not automatically update the previously generated Maven artifact that Docker was packaging.
-
-I rebuilt the application:
+The application therefore had to be rebuilt first:
 
 ```bash
 mvn clean package
 ```
 
-and then rebuilt the Docker image without relying on cached layers:
+followed by a new Docker image build.
 
-```bash
-docker build --no-cache -t ejones904/demo-app:<NEW-TAG> .
+This demonstrated an important dependency:
+
+```text
+Source Change
+     ↓
+Maven Artifact Rebuild
+     ↓
+Docker Image Rebuild
+     ↓
+Registry Push
+     ↓
+EC2 Redeployment
 ```
 
-The new version was pushed to Docker Hub and pulled onto the EC2 instance.
+A source-code change does not automatically update an existing application artifact.
 
 ---
 
-# 11. Troubleshooting ClassNotFoundException
+### ClassNotFoundException
 
-During the next deployment attempt, the new container failed to accept connections.
+A later container deployment failed to remain available.
 
-Instead of immediately changing the AWS networking configuration, I checked the container state and logs:
+Instead of immediately modifying AWS networking again, the container state and logs were inspected:
 
 ```bash
 docker ps -a
 docker logs demo-app
 ```
 
-The logs revealed:
+The logs showed:
 
 ```text
 java.lang.ClassNotFoundException: com.example.Application
 ```
 
-The application source was located at:
+The failure was therefore inside the application artifact rather than EC2, the Security Group, or Docker networking.
 
-```text
-src/main/java/com/example/Application.java
-```
+### Root Cause
 
-but the Java package declaration needed to match the expected package structure.
+The Java package declaration did not correctly match the expected application package structure.
 
-The application was corrected to include:
-
-```java
-package com.example;
-```
-
-Before rebuilding the Docker image again, I verified that the compiled application class existed inside the generated JAR:
+The package configuration was corrected and the resulting JAR was inspected before another Docker build:
 
 ```bash
 jar tf target/*.jar | grep Application.class
 ```
 
-The expected class path was:
+The expected class was verified at:
 
 ```text
 BOOT-INF/classes/com/example/Application.class
 ```
 
-The Maven artifact and Docker image were then rebuilt and a new version was pushed to Docker Hub.
+The Maven artifact and Docker image were then rebuilt and redeployed.
 
 ---
 
-# 12. Redeploying the Corrected Image
+## Validation
 
-The corrected image was pulled onto EC2 and deployed:
+### Spring Boot Startup
 
-```bash
-docker pull ejones904/demo-app:<CORRECTED-TAG>
+Container logs were inspected to confirm successful application initialization.
 
-docker run -d \
-  --name demo-app \
-  -p 3000:8080 \
-  ejones904/demo-app:<CORRECTED-TAG>
-```
+![Spring Boot Application Started](screenshots/09-spring-boot-application-started.png)
 
-The application was first tested from inside the EC2 instance:
+---
 
-```bash
-curl http://localhost:3000/
-```
+### Local EC2 Validation
 
-Result:
-
-```text
-OK
-```
-
-I then requested the full HTTP response:
+The application was first tested directly from the EC2 host:
 
 ```bash
 curl -i http://localhost:3000/
 ```
 
-The application returned:
+The resulting response was:
 
 ```text
 HTTP/1.1 200
@@ -480,177 +416,122 @@ OK
 
 ![Local HTTP 200 Validation](screenshots/10-local-http-200-validation.png)
 
+Testing locally first separated application/container health from external AWS network access.
+
 ---
 
-# 13. Public Application Validation
+### External Validation
 
-Finally, I accessed the application externally through the EC2 public endpoint:
-
-```text
-http://<EC2-PUBLIC-IP>:3000/
-```
-
-The browser successfully returned:
-
-```text
-OK
-```
+The application was then tested through the EC2 public endpoint.
 
 ![Public Browser Validation](screenshots/11-public-browser-validation.png)
 
-This confirmed the complete deployment path was operational:
+The successful external request validated the complete path:
 
 ```text
 Docker Hub
-     |
-     v
+     ↓
 AWS EC2
-     |
-     v
+     ↓
 Docker Engine
-     |
-     v
-Spring Boot Container :8080
-     |
-     v
-EC2 Host :3000
-     |
-     v
-AWS Security Group
-     |
-     v
+     ↓
+Spring Boot :8080
+     ↓
+EC2 :3000
+     ↓
+Security Group
+     ↓
 Public Client
-     |
-     v
+     ↓
 HTTP 200 OK
 ```
 
 ---
 
-# Troubleshooting Summary
+## Security Considerations
 
-Two application-level issues were identified during deployment.
+Security controls implemented during the project included:
 
-### HTTP 404
+* SSH key-based EC2 authentication
+* private SSH key excluded from GitHub
+* AWS Security Group rules
+* separation of SSH and application access
+* non-root Docker administration
+* controlled inbound access where practical
 
-**Symptom**
+For a production implementation, additional controls would include:
 
-The application returned the Spring Boot Whitelabel 404 page.
-
-**Investigation**
-
-The response proved that requests were already successfully reaching Spring Boot.
-
-This allowed AWS networking, Security Group configuration, Docker networking, and Tomcat startup to be separated from the application-layer problem.
-
-**Root Cause**
-
-The Java status method had not been mapped to an HTTP endpoint.
-
-**Resolution**
-
-Added:
-
-```java
-@RestController
-@GetMapping("/")
-```
-
-and rebuilt the Maven artifact and Docker image.
+* avoiding direct public exposure of the application container
+* placing the application behind an ALB or reverse proxy
+* HTTPS/TLS
+* IAM-based administration where applicable
+* centralized secret management
+* automated patch management
+* container vulnerability scanning
+* centralized logging and monitoring
+* least-privilege network rules
 
 ---
 
-### ClassNotFoundException
+## What This Project Demonstrates
 
-**Symptom**
+This project demonstrates practical experience with:
 
-The newly deployed container stopped responding on port 3000.
-
-**Investigation**
-
-Container logs showed:
-
-```text
-java.lang.ClassNotFoundException: com.example.Application
-```
-
-**Root Cause**
-
-The Java package structure did not match the application's expected main class.
-
-**Resolution**
-
-Corrected the Java package declaration, rebuilt the Maven artifact, verified the compiled class inside the JAR, rebuilt the Docker image, pushed a new image version, and redeployed it.
-
----
-
-# Key Takeaways
-
-This project reinforced an important principle for me: a failed web request does not automatically mean there is a networking problem.
-
-The initial 404 was actually evidence that much of the infrastructure was already working.
-
-By troubleshooting the deployment layer by layer, I was able to distinguish between:
-
-```text
-Infrastructure
-Networking
-Container Runtime
-Port Mapping
-Application Runtime
-Application Routing
-Build Artifact
-```
-
-That made it possible to isolate the actual failure instead of repeatedly changing infrastructure that was already functioning correctly.
-
-The project also reinforced why understanding manual deployment matters before automating deployment through CI/CD.
-
-A CI/CD pipeline still needs to know:
-
-* What application artifact to build
-* How to build the Docker image
-* Where to publish the image
-* Which image version to deploy
-* Which host should run it
-* Which ports should be mapped
-* Which network traffic should be permitted
-* How to determine whether the application actually started successfully
-
-Automation removes manual execution. It does not remove the need to understand the deployment architecture.
-
----
-
-# Skills Demonstrated
-
-* AWS EC2 provisioning
+* AWS EC2
 * AWS Security Groups
-* Linux server administration
-* SSH key-based authentication
-* Docker installation and configuration
+* Linux administration
+* SSH authentication
+* Docker installation
 * Docker image management
 * Docker Hub
-* Container deployment
+* container deployment
 * Docker port mapping
-* Maven builds
+* Maven
 * Spring Boot
 * Java application troubleshooting
-* Container log analysis
+* container log analysis
 * HTTP troubleshooting
-* Application-layer vs. infrastructure-layer fault isolation
-* Versioned artifact deployment
-* End-to-end cloud application validation
+* artifact lifecycle troubleshooting
+* application vs. infrastructure fault isolation
+* end-to-end deployment validation
 
 ---
 
-## Final Result
+## Future Enhancements
 
-The containerized Spring Boot application was successfully deployed to AWS EC2 and validated both locally from the EC2 host and externally through the EC2 public endpoint.
+The manual workflow provides the foundation for automation.
 
-```text
-HTTP/1.1 200
-OK
-```
+Logical next steps include:
 
-The deployment demonstrated the complete path from a versioned Docker artifact to a publicly accessible cloud-hosted application.
+* automated deployment through Jenkins
+* automated Docker image versioning
+* application health checks
+* deployment rollback
+* Elastic IP or DNS-based addressing
+* Application Load Balancer
+* HTTPS
+* centralized logging
+* monitoring
+* Terraform-based EC2 provisioning
+* container registry and image security improvements
 
+The deployment process established here is being extended into a larger **Jenkins multibranch CI/CD workflow**.
+
+---
+
+## Repository Documentation
+
+* [`README.md`](README.md) — engineering overview, architecture, troubleshooting, and validation
+* [`IMPLEMENTATION.md`](IMPLEMENTATION.md) — detailed chronological implementation record
+
+---
+
+## Engineering Outcome
+
+The project established a complete manual deployment path from a versioned container image to a functioning AWS-hosted application.
+
+More importantly, troubleshooting demonstrated how evidence from each layer can be used to narrow the scope of a failure.
+
+A `404`, a stopped container, and a failed network connection may all appear to the user as an unavailable application, but they represent very different failure domains.
+
+By validating each layer independently, the deployment was successfully taken from Docker Hub through AWS EC2 to a confirmed external **HTTP 200 OK** response.
